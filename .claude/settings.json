@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "bettercallclaude-italia-marketplace": {
+      "source": { "source": "github", "repo": "fedec65/bettercallclaude_italia" }
+    }
+  },
+  "enabledPlugins": {
+    "bettercallclaude-italia@bettercallclaude-italia-marketplace": true
+  }
+}
