@@ -1,0 +1,40 @@
+{
+  "mcpServers": {
+    "normattiva": {
+      "type": "http",
+      "url": "https://mcp-italia.bettercallclaude.ch/normattiva/mcp"
+    },
+    "corte-costituzionale": {
+      "type": "http",
+      "url": "https://mcp-italia.bettercallclaude.ch/corte-costituzionale/mcp"
+    },
+    "giustizia-amministrativa": {
+      "type": "http",
+      "url": "https://mcp-italia.bettercallclaude.ch/giustizia-amministrativa/mcp"
+    },
+    "cassazione": {
+      "type": "http",
+      "url": "https://mcp-italia.bettercallclaude.ch/cassazione/mcp"
+    },
+    "eur-lex-ita": {
+      "type": "http",
+      "url": "https://mcp-italia.bettercallclaude.ch/eur-lex-ita/mcp"
+    },
+    "legal-citations-ita": {
+      "type": "http",
+      "url": "https://mcp-italia.bettercallclaude.ch/legal-citations-ita/mcp"
+    },
+    "legal-persona-ita": {
+      "type": "http",
+      "url": "https://mcp-italia.bettercallclaude.ch/legal-persona-ita/mcp"
+    },
+    "citation-verify-ita": {
+      "type": "http",
+      "url": "https://mcp-italia.bettercallclaude.ch/citation-verify-ita/mcp"
+    },
+    "workflows-ita": {
+      "type": "http",
+      "url": "https://mcp-italia.bettercallclaude.ch/workflows-ita/mcp"
+    }
+  }
+}

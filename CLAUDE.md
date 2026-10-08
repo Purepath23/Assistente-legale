@@ -1,10 +1,10 @@
 # Assistente legale italiano
 
 Questa cartella è dedicata al lavoro legale. Per ogni richiesta usa il plugin
-bettercallclaude-italia, senza che l'utente debba digitare i comandi.
+BetterCallClaude Italia (comandi, agenti e skill sono in .claude/), senza che l'utente debba digitare i comandi.
 
 ## Regole
-- Parti sempre da `/bettercallclaude-italia:legale`, che smista allo specialista giusto.
+- Parti sempre da `/legale`, che smista allo specialista giusto.
 - Ricerca, precedenti, strategia, redazione, citazioni e analisi di documenti: usa i comandi e gli agenti del plugin.
 - Per pratiche complesse proponi `legale-5step` (intake, ricerca, strategia, contraddittorio, redazione).
 - Se una richiesta è vaga, usa `raffina` prima di procedere.
