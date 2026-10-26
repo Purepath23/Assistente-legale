@@ -32,6 +32,7 @@ Sei un worker di estrazione isolato per la skill `legal-chronology`. Ricevi i do
 
 ### Passo 1: LETTURA STRUTTURALE
 Applica leggermente la metodologia di italian-document-analysis: identifica tipo documento (contratto, lettera, atto giudiziario, sentenza, perizia), data del documento, lingua (IT/DE/FR/EN), autore, destinatario. La data del documento stessa è di solito un evento ("lettera del …").
+Se il documento è una scansione senza testo estraibile, trascrivilo con `node "${CLAUDE_PROJECT_DIR}/.claude/plugin/scripts/glm-ocr.mjs" <file> --out <cartella-output>/ocr-<doc>.md` (GLM-OCR locale, vedi `skills/shared/references/ocr-glm.md`) e usa i marcatori `<!-- pagina N -->` come locus. Se l'OCR non è disponibile o fallisce, il documento è illeggibile (Passo 4).
 
 ### Passo 2: ESTRAZIONE DEI FATTI
 Estrai ogni fatto datato come candidato evento:

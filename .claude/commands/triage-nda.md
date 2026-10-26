@@ -31,6 +31,8 @@ Sei invocato tramite `/triage-nda`. Applica la skill italian-document-analysis i
 
 **Convenzione output**: scrivi i report di triage in `bcc-output/YYYY-MM-DD-<slug>/triage-nda-<doc>.md`. In modalita batch, scrivi anche una tabella riepilogativa. In chat mostra solo il verdetto (GREEN/YELLOW/RED) con un riassunto di 2-3 righe per NDA. Vedi `skills/shared/SKILL.md`.
 
+**Documenti scansionati**: se il file è un PDF senza testo estraibile o un'immagine, trascrivilo prima con GLM-OCR in locale (`/ocr`, vedi `skills/shared/references/ocr-glm.md`) e analizza il Markdown prodotto, citando le pagine dai marcatori `<!-- pagina N -->`. Mai OCR cloud per documenti di clienti.
+
 **Ambito plugin**: usa esclusivamente agenti, skill e server MCP di BetterCallClaude Italia per tutto il lavoro legale. Non delegare a skill o agenti esterni al plugin. Lettura file e operazioni di sistema sono esenti.
 
 ## Caricamento Playbook

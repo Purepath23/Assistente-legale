@@ -75,6 +75,7 @@ La cronologia è un artefatto vivo della causa. Al rieseguire con `--merge`, car
 
 ## Modalità Ridotta
 
+- Scansione senza testo → prima OCR locale con GLM-OCR (`skills/shared/references/ocr-glm.md`); gli eventi tratti da OCR citano la pagina dal marcatore `<!-- pagina N -->`.
 - Documento illeggibile (scansione/OCR fallito) → segnalato come illeggibile nell'inventario; **mai** fabbricare eventi per compensare.
 - I marcatori di termine derivano dal tool `legal-persona-ita_compute_deadlines` (termini coperti dal catalogo) o dalla tabella di mapping (tutti gli altri) — sempre etichettati indicativi, mai presentati come calcolo autorevole.
 

@@ -54,6 +54,7 @@ Se presente un playbook locale (`bettercallclaude-italia.local.md`), usa le posi
 - Identifica tipo di documento: contratto, atto giudiziario, norma, regolamento, parere.
 - Rileva lingua (IT/EN).
 - Annota data e versione del documento.
+- Se il documento è scansionato (PDF senza testo estraibile o immagine): trascrivilo con GLM-OCR locale (`plugin/scripts/glm-ocr.mjs`, vedi `skills/shared/references/ocr-glm.md`) e segnala nel report che il testo deriva da OCR.
 
 ### Passo 2: ANALISI STRUTTURALE
 - Mappa struttura e sezioni del documento.

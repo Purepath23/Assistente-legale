@@ -13,7 +13,7 @@ tools:
 
 Sei invocato tramite `/aiuto`. Mostra il riferimento completo dei comandi.
 
-## Comandi (30)
+## Comandi (31)
 
 | Comando | Descrizione |
 |---------|-------------|
@@ -38,6 +38,7 @@ Sei invocato tramite `/aiuto`. Mostra il riferimento completo dei comandi.
 | `/crea-flusso` | Crea un flusso di lavoro personalizzato riutilizzabile combinando gli agenti del plugin |
 | `/traduci` | Traduce documenti legali IT/EN |
 | `/analisi-doc` | Analizza documenti legali |
+| `/ocr` | OCR locale di PDF scansionati e immagini con GLM-OCR (Ollama) |
 | `/triage-nda` | Triage NDA: classifica GREEN/YELLOW/RED secondo diritto italiano |
 | `/cronologia-legale` | Cronologia legale documentata da atti di causa |
 | `/riassumi` | Consolida output delle pipeline multi-agente |
@@ -135,6 +136,8 @@ Sei invocato tramite `/aiuto`. Mostra il riferimento completo dei comandi.
 /legale-loop goal_20260521_abc123
 
 /analisi-doc @contratto.pdf Analizza questo contratto di locazione commerciale
+
+/ocr @scansione-decreto.pdf Trascrivi questa scansione in locale con GLM-OCR
 
 /doctor
 ```
