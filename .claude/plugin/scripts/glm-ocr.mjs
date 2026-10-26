@@ -14,7 +14,7 @@
  *
  * Variabili d'ambiente:
  *   OLLAMA_HOST    default http://127.0.0.1:11434 (solo localhost / 127.x / ::1)
- *   GLM_OCR_MODEL  default glm-ocr
+ *   GLM_OCR_MODEL  default glm-ocr (senza tag usa la variante installata: latest, q8_0, bf16)
  */
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { join, extname, basename, dirname } from "node:path";
@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
 const MODEL = process.env.GLM_OCR_MODEL || "glm-ocr";
+const TAG_PREFERENCE = ["latest", "q8_0", "bf16"];
 const PROMPTS = { text: "Text Recognition:", table: "Table Recognition:", formula: "Formula Recognition:" };
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const PAGE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -91,19 +92,27 @@ async function ollamaTags(host) {
   return (body.models || []).map((m) => m.name);
 }
 
-async function ensureModel(host) {
-  const names = await ollamaTags(host);
-  const want = MODEL.includes(":") ? MODEL : `${MODEL}:latest`;
-  if (!names.includes(MODEL) && !names.includes(want))
-    throw new Error(`modello "${MODEL}" non installato. Esegui: ollama pull ${MODEL}`);
+/** Sceglie il nome esatto da usare: con un tag lo richiede tale e quale, senza tag accetta qualsiasi variante installata. */
+function pickModel(names, model) {
+  if (model.includes(":")) return names.includes(model) ? model : null;
+  const variants = names.filter((n) => n.startsWith(`${model}:`));
+  const rank = (n) => { const i = TAG_PREFERENCE.indexOf(n.slice(model.length + 1)); return i < 0 ? TAG_PREFERENCE.length : i; };
+  return variants.sort((a, b) => rank(a) - rank(b))[0] || null;
 }
 
-async function ocrImage(host, pngPath, mode) {
+async function ensureModel(host) {
+  const model = pickModel(await ollamaTags(host), MODEL);
+  if (!model)
+    throw new Error(`modello "${MODEL}" non installato. Esegui: ollama pull ${MODEL.includes(":") ? MODEL : `${MODEL}:q8_0`}`);
+  return model;
+}
+
+async function ocrImage(host, model, pngPath, mode) {
   const res = await fetch(`${host}/api/generate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: MODEL,
+      model,
       prompt: PROMPTS[mode],
       images: [readFileSync(pngPath).toString("base64")],
       stream: false,
@@ -142,19 +151,19 @@ async function run(opts) {
   if (!opts.file) fail("specifica un file. Uso: glm-ocr.mjs <file> [--out file.md] [--mode text|table|formula] [--pages 1-3] [--dpi 200]");
   if (!existsSync(opts.file)) fail(`file non trovato: ${opts.file}`);
   const host = resolveHost(process.env.OLLAMA_HOST);
-  await ensureModel(host);
+  const model = await ensureModel(host);
 
   const workdir = mkdtempSync(join(tmpdir(), "glm-ocr-"));
   try {
     const pages = pagesFor(opts.file, opts, workdir);
     if (!pages.length) throw new Error("nessuna pagina da elaborare (controlla --pages)");
     const parts = [
-      `<!-- glm-ocr: ${basename(opts.file)} | modello ${MODEL} | modalita ${opts.mode} | ${new Date().toISOString()} -->`,
+      `<!-- glm-ocr: ${basename(opts.file)} | modello ${model} | modalita ${opts.mode} | ${new Date().toISOString()} -->`,
       `<!-- Testo da OCR automatico: verificare sull'originale prima di citarlo. -->`,
     ];
     for (const p of pages) {
       process.stderr.write(`glm-ocr: pagina ${p.page}/${pages[pages.length - 1].page}...\n`);
-      const text = await ocrImage(host, p.path, opts.mode);
+      const text = await ocrImage(host, model, p.path, opts.mode);
       parts.push(`\n<!-- pagina ${p.page} -->\n`);
       parts.push(text || "[pagina vuota o illeggibile]");
     }
@@ -171,10 +180,10 @@ async function run(opts) {
 
 async function check() {
   const host = resolveHost(process.env.OLLAMA_HOST);
-  await ensureModel(host);
+  const model = await ensureModel(host);
   let pdf = true;
   try { execFileSync("pdftoppm", ["-v"], { stdio: "ignore" }); } catch { pdf = false; }
-  console.log(`OK: Ollama su ${host}, modello ${MODEL} installato.`);
+  console.log(`OK: Ollama su ${host}, modello ${model} installato.`);
   console.log(pdf ? "OK: pdftoppm disponibile (PDF supportati)." : "ATTENZIONE: pdftoppm mancante — solo immagini. Installa poppler per i PDF.");
 }
 
@@ -189,6 +198,10 @@ function selfcheck() {
     try { resolveHost(bad); } catch { threw = true; }
     assert(threw, `host remoto accettato: ${bad}`);
   }
+  assert(pickModel(["glm-ocr:q8_0", "x:latest"], "glm-ocr") === "glm-ocr:q8_0", "variante q8_0");
+  assert(pickModel(["glm-ocr:bf16", "glm-ocr:latest"], "glm-ocr") === "glm-ocr:latest", "preferenza latest");
+  assert(pickModel(["glm-ocr:bf16"], "glm-ocr:q8_0") === null, "tag esplicito mancante");
+  assert(pickModel(["glm-ocr-x:latest"], "glm-ocr") === null, "nome diverso");
   assert([...parsePages("1-3,7")].join() === "1,2,3,7", "parsePages");
   let threw = false;
   try { parsePages("3-1"); } catch { threw = true; }
