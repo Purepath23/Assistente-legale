@@ -4,7 +4,7 @@
 # Uso (una sola riga nel Terminale):
 #   curl -fsSL https://raw.githubusercontent.com/Purepath23/Assistente-legale/claude/gracious-allen-oeuoyq/installa-ocr.sh | bash
 #
-# Cosa fa: scarica/aggiorna il progetto in ~/Assistente-legale, installa poppler se manca,
+# Cosa fa: scarica/aggiorna il progetto in ~/Assistente-legale, controlla Node,
 # avvia Ollama, scarica il modello glm-ocr se manca e verifica che tutto funzioni.
 # Si puo rilanciare quante volte si vuole.
 
@@ -32,16 +32,15 @@ else
   ok "Progetto scaricato in $DIR"
 fi
 
-step "2/5  Node e poppler"
+step "2/5  Node e PDF"
 command -v node >/dev/null || die "Node.js non trovato. Installalo da https://nodejs.org (versione LTS) e rilancia."
 ok "Node $(node -v)"
 if command -v pdftoppm >/dev/null; then
   ok "poppler gia installato"
-elif command -v brew >/dev/null; then
-  brew install poppler || die "Installazione di poppler non riuscita."
-  ok "poppler installato"
+elif [ "$(uname)" = "Darwin" ]; then
+  ok "PDF: uso il motore PDF integrato di macOS (niente da installare)"
 else
-  die "Manca Homebrew. Installalo da https://brew.sh e rilancia."
+  die "Manca poppler. Installalo (Debian/Ubuntu: sudo apt install poppler-utils) e rilancia."
 fi
 
 step "3/5  Ollama"

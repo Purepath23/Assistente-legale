@@ -8,7 +8,8 @@
  *                    [--pages 1-3,7] [--dpi 200]
  *   node glm-ocr.mjs selfcheck
  *
- * Zero dipendenze (Node >= 18). Per i PDF serve `pdftoppm` (poppler).
+ * Zero dipendenze (Node >= 18). PDF: su macOS usa il motore PDF di sistema (PDFKit, nessuna
+ * installazione); altrove serve `pdftoppm` (poppler), usato anche su macOS se presente.
  * Segreto professionale (Art. 622 CP, L. 247/2012): il documento non lascia mai la
  * macchina. Lo script parla SOLO con un Ollama su loopback e rifiuta host remoti.
  *
@@ -126,19 +127,69 @@ async function ocrImage(host, model, pngPath, mode) {
 }
 
 // ---------------------------------------------------------------- pages
-/** Ritorna [{page, path}] — rasterizza i PDF con pdftoppm in una cartella temporanea. */
+// Renderer PDF -> PNG con PDFKit di macOS (JavaScript for Automation, nessuna dipendenza).
+// Argomenti: <pdf> <cartella> <dpi> <prima pagina> <ultima pagina>; scrive p-<n>.png.
+const MAC_RENDER_JXA = `
+ObjC.import('Foundation'); ObjC.import('AppKit'); ObjC.import('PDFKit');
+function run(argv) {
+  const dpi = Number(argv[2]);
+  const doc = $.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(argv[0]));
+  if (!doc || doc.isNil()) throw new Error('PDF non leggibile (protetto o danneggiato?)');
+  const n = Number(doc.pageCount);
+  const from = Math.max(1, Number(argv[3]) || 1), to = Math.min(n, Number(argv[4]) || n);
+  for (let i = from; i <= to; i++) {
+    const page = doc.pageAtIndex(i - 1);
+    const box = page.boundsForBox(0);
+    const rotated = Number(page.rotation) % 180 !== 0;
+    const w = (rotated ? box.size.height : box.size.width) * dpi / 72;
+    const h = (rotated ? box.size.width : box.size.height) * dpi / 72;
+    const img = page.thumbnailOfSizeForBox($.NSMakeSize(w, h), 0);
+    const rep = $.NSBitmapImageRep.imageRepWithData(img.TIFFRepresentation);
+    const png = rep.representationUsingTypeProperties(4, $());
+    if (!png.writeToFileAtomically(argv[1] + '/p-' + i + '.png', true)) throw new Error('scrittura pagina ' + i + ' non riuscita');
+  }
+  return String(n);
+}`;
+
+function hasPdftoppm() {
+  try {
+    execFileSync("pdftoppm", ["-v"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Motore usato per i PDF, o null se non ce n'e uno. */
+function pdfEngine() {
+  if (hasPdftoppm()) return "pdftoppm";
+  return process.platform === "darwin" ? "macos" : null;
+}
+
+/** Ritorna [{page, path}] — rasterizza i PDF in una cartella temporanea. */
 function pagesFor(file, opts, workdir) {
   const ext = extname(file).toLowerCase();
   if (IMAGE_EXT.has(ext)) return [{ page: 1, path: file }];
   if (ext !== ".pdf") throw new Error(`formato non supportato: ${ext || "(nessuna estensione)"} — usa PDF, PNG, JPG o WEBP`);
-  try {
-    execFileSync("pdftoppm", ["-v"], { stdio: "ignore" });
-  } catch {
-    throw new Error("pdftoppm non trovato. Installa poppler (macOS: brew install poppler; Debian/Ubuntu: apt install poppler-utils; Windows: choco install poppler).");
+  const first = opts.pages ? Math.min(...opts.pages) : 0;
+  const last = opts.pages ? Math.max(...opts.pages) : 0;
+  const engine = pdfEngine();
+  if (engine === "macos") {
+    const script = join(workdir, "render.js");
+    writeFileSync(script, MAC_RENDER_JXA);
+    try {
+      execFileSync("osascript", ["-l", "JavaScript", script, file, workdir, String(opts.dpi), String(first), String(last)],
+        { stdio: ["ignore", "ignore", "pipe"] });
+    } catch (e) {
+      throw new Error(`conversione del PDF non riuscita: ${String(e.stderr || e.message).trim().slice(0, 200)}`);
+    }
+  } else if (engine === "pdftoppm") {
+    const args = ["-r", String(opts.dpi), "-png"];
+    if (opts.pages) args.push("-f", String(first), "-l", String(last));
+    execFileSync("pdftoppm", [...args, file, join(workdir, "p")], { stdio: ["ignore", "ignore", "pipe"] });
+  } else {
+    throw new Error("pdftoppm non trovato. Installa poppler (Debian/Ubuntu: apt install poppler-utils; Windows: choco install poppler).");
   }
-  const args = ["-r", String(opts.dpi), "-png"];
-  if (opts.pages) args.push("-f", String(Math.min(...opts.pages)), "-l", String(Math.max(...opts.pages)));
-  execFileSync("pdftoppm", [...args, file, join(workdir, "p")], { stdio: ["ignore", "ignore", "pipe"] });
   return readdirSync(workdir)
     .map((f) => ({ f, m: f.match(/^p-0*(\d+)\.png$/) }))
     .filter((x) => x.m)
@@ -181,10 +232,11 @@ async function run(opts) {
 async function check() {
   const host = resolveHost(process.env.OLLAMA_HOST);
   const model = await ensureModel(host);
-  let pdf = true;
-  try { execFileSync("pdftoppm", ["-v"], { stdio: "ignore" }); } catch { pdf = false; }
+  const engine = pdfEngine();
   console.log(`OK: Ollama su ${host}, modello ${model} installato.`);
-  console.log(pdf ? "OK: pdftoppm disponibile (PDF supportati)." : "ATTENZIONE: pdftoppm mancante — solo immagini. Installa poppler per i PDF.");
+  console.log(engine === "macos" ? "OK: PDF supportati (motore PDF di macOS)."
+    : engine ? "OK: pdftoppm disponibile (PDF supportati)."
+    : "ATTENZIONE: pdftoppm mancante — solo immagini. Installa poppler per i PDF.");
 }
 
 function selfcheck() {

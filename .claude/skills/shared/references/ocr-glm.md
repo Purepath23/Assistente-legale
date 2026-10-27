@@ -17,9 +17,11 @@ GLM-OCR gira in locale tramite Ollama: il documento non lascia la macchina. Lo s
 
 ## Requisiti (una tantum, sul computer dell'utente)
 
+Sul Mac basta una riga nel Terminale: `curl -fsSL https://raw.githubusercontent.com/Purepath23/Assistente-legale/claude/gracious-allen-oeuoyq/installa-ocr.sh | bash`. In dettaglio:
+
 1. Ollama recente: https://ollama.com/download
 2. `ollama pull glm-ocr:q8_0` (se `ollama pull glm-ocr` fallisce con `Error: EOF`, usa questa variante oppure esegui prima `ollama signin`). Lo script usa automaticamente la variante `glm-ocr:*` installata; per forzarne una imposta `GLM_OCR_MODEL`.
-3. Per i PDF: poppler (`pdftoppm`) — macOS `brew install poppler`, Debian/Ubuntu `apt install poppler-utils`, Windows `choco install poppler`.
+3. Per i PDF: su macOS niente (usa il motore PDF di sistema); altrove poppler (`pdftoppm`) — Debian/Ubuntu `apt install poppler-utils`, Windows `choco install poppler`.
 4. Verifica: `node "${CLAUDE_PROJECT_DIR}/.claude/plugin/scripts/glm-ocr.mjs" check`
 
 ## Comando
