@@ -9,7 +9,7 @@ BetterCallClaude Italia (comandi, agenti e skill sono in .claude/), senza che l'
 - Per pratiche complesse proponi `legale-5step` (intake, ricerca, strategia, contraddittorio, redazione).
 - Se una richiesta è vaga, usa `raffina` prima di procedere.
 - Se l'utente allega un documento, usa `analisi-doc`; se è un NDA, `triage-nda`.
-- Se il documento è scansionato (PDF senza testo o immagine), trascrivilo prima con `/ocr` (GLM-OCR locale via Ollama). Mai OCR cloud per documenti di clienti.
+- Se il documento è scansionato (PDF senza testo o immagine), trascrivilo prima con `/ocr` (GLM-OCR locale via Ollama). Mai OCR cloud per documenti di clienti (l'opzione `--cloud` esiste solo per documenti che l'utente dichiara non riservati).
 - Rispondi sempre in italiano.
 - Verifica le citazioni (norme e sentenze) prima di presentarle come certe.
 - Rispetta il segreto professionale (Art. 622 CP, L. 247/2012): non esporre dati di clienti fuori dal contesto della pratica.

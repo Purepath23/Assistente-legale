@@ -15,6 +15,10 @@ Se il PDF ha già un livello di testo leggibile, **non** fare OCR: leggi il file
 
 GLM-OCR gira in locale tramite Ollama: il documento non lascia la macchina. Lo script rifiuta qualsiasi `OLLAMA_HOST` non locale (solo `localhost`, `127.x`, `::1`). **Non** usare API OCR cloud (Z.ai o altre) per documenti di clienti: se Ollama non è disponibile, fermati e chiedi all'utente.
 
+### Eccezione: OCR online (`--cloud`, `OCR-cloud.command`)
+
+Solo se l'utente dichiara **esplicitamente** che il documento **non è riservato** e chiede la velocità: `glm-ocr.mjs <file> --cloud` usa l'API di Z.ai (le pagine vengono inviate ai loro server; chiave in `ZAI_API_KEY` o `~/.glm-ocr-zai-key`, creata dall'utente). Non attivarla mai di tua iniziativa, non usarla per atti di clienti, e non chiedere né usare la chiave dell'utente nella chat.
+
 ## Requisiti (una tantum, sul computer dell'utente)
 
 Sul Mac basta una riga nel Terminale: `curl -fsSL https://raw.githubusercontent.com/Purepath23/Assistente-legale/claude/gracious-allen-oeuoyq/installa-ocr.sh | bash`. In dettaglio:

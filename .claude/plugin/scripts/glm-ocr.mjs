@@ -5,12 +5,15 @@
  * Uso:
  *   node glm-ocr.mjs check
  *   node glm-ocr.mjs <file.pdf|png|jpg|webp> [--out <file.md>] [--mode text|table|formula]
- *                    [--pages 1-3,7] [--dpi 150] [--force-ocr]
+ *                    [--pages 1-3,7] [--dpi 150] [--force-ocr] [--cloud]
  *   node glm-ocr.mjs selfcheck
  *
  * Le pagine che hanno gia testo digitale (PDF non scansionati o con livello OCR) non passano
  * dal modello: si usa il loro testo, molto piu veloce. --force-ocr le rilegge comunque con GLM-OCR.
  * L'output viene scritto pagina per pagina, quindi un'interruzione non fa perdere il lavoro fatto.
+ *
+ * --cloud (SOLO documenti NON riservati): al posto di Ollama usa l'API GLM-OCR di Z.ai. Le pagine
+ * vengono inviate ai loro server. Chiave in ZAI_API_KEY oppure nel file ~/.glm-ocr-zai-key.
  *
  * Zero dipendenze (Node >= 18). PDF: su macOS usa il motore PDF di sistema (PDFKit, nessuna
  * installazione); altrove serve `pdftoppm` (poppler), usato anche su macOS se presente.
@@ -23,7 +26,7 @@
  */
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { join, extname, basename, dirname } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 
 const MODEL = process.env.GLM_OCR_MODEL || "glm-ocr";
@@ -32,6 +35,9 @@ const PROMPTS = { text: "Text Recognition:", table: "Table Recognition:", formul
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const PAGE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_TOKENS_PER_PAGE = 4096;   // ferma il modello se entra in un ciclo di ripetizioni
+const ZAI_BASE = (process.env.ZAI_BASE_URL || "https://api.z.ai/api/paas/v4").replace(/\/$/, "");
+const ZAI_KEY_FILE = join(homedir(), ".glm-ocr-zai-key");
+const CLOUD_CONCURRENCY = 4;
 const MIN_TEXT_LAYER_CHARS = 200;   // sotto questa soglia la pagina e considerata scansionata
 
 // ---------------------------------------------------------------- helpers
@@ -70,7 +76,7 @@ function parsePages(spec) {
 }
 
 function parseArgs(argv) {
-  const opts = { file: null, out: null, mode: "text", pages: null, dpi: 150, forceOcr: false };
+  const opts = { file: null, out: null, mode: "text", pages: null, dpi: 150, forceOcr: false, cloud: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--out") opts.out = argv[++i];
@@ -78,6 +84,7 @@ function parseArgs(argv) {
     else if (a === "--pages") opts.pages = parsePages(argv[++i]);
     else if (a === "--dpi") opts.dpi = Number(argv[++i]);
     else if (a === "--force-ocr") opts.forceOcr = true;
+    else if (a === "--cloud") opts.cloud = true;
     else if (a.startsWith("--")) throw new Error(`opzione sconosciuta: ${a}`);
     else if (!opts.file) opts.file = a;
     else throw new Error(`argomento in eccesso: ${a}`);
@@ -132,6 +139,59 @@ async function ocrImage(host, model, pngPath, mode) {
   const body = await res.json();
   const text = String(body.response || "").trim();
   return body.done_reason === "length" ? `${text}\n\n[ATTENZIONE: trascrizione interrotta, pagina da verificare sull'originale]` : text;
+}
+
+// ---------------------------------------------------------------- cloud (Z.ai)
+function loadZaiKey() {
+  const fromEnv = (process.env.ZAI_API_KEY || "").trim();
+  if (fromEnv) return fromEnv;
+  if (existsSync(ZAI_KEY_FILE)) {
+    const k = readFileSync(ZAI_KEY_FILE, "utf8").trim();
+    if (k) return k;
+  }
+  throw new Error(`manca la chiave API di Z.ai: imposta ZAI_API_KEY oppure salvala in ${ZAI_KEY_FILE}`);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let zaiFileFormat = null; // formato del campo "file" che l'API ha accettato: "raw" | "datauri"
+
+/** Una pagina (PNG) -> Markdown con l'API layout_parsing di Z.ai. Riprova su 429/5xx. */
+async function ocrImageCloud(key, pngPath) {
+  const b64 = readFileSync(pngPath).toString("base64");
+  let lastErr = new Error("risposta non valida da Z.ai");
+  for (const fmt of zaiFileFormat ? [zaiFileFormat] : ["raw", "datauri"]) {
+    const file = fmt === "raw" ? b64 : `data:image/png;base64,${b64}`;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      let res;
+      try {
+        res = await fetch(`${ZAI_BASE}/layout_parsing`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+          body: JSON.stringify({ model: "glm-ocr", file }),
+          signal: AbortSignal.timeout(180000),
+        });
+      } catch (e) {
+        lastErr = new Error(`connessione a Z.ai non riuscita (${e.cause?.code || e.message})`);
+        await sleep(2000 * (attempt + 1));
+        continue;
+      }
+      const text = await res.text();
+      if (res.status === 401 || res.status === 403)
+        throw new Error("Z.ai ha rifiutato la chiave API (non valida o senza credito). Per cambiarla cancella " + ZAI_KEY_FILE);
+      if (res.status === 429 || res.status >= 500) {
+        lastErr = new Error(`Z.ai ha risposto ${res.status}: ${text.slice(0, 160)}`);
+        await sleep(2000 * (attempt + 1));
+        continue;
+      }
+      if (!res.ok) { lastErr = new Error(`Z.ai ha risposto ${res.status}: ${text.slice(0, 200)}`); break; }
+      let body;
+      try { body = JSON.parse(text); } catch { lastErr = new Error("risposta di Z.ai non leggibile"); break; }
+      if (typeof body.md_results !== "string") { lastErr = new Error(`risposta di Z.ai senza testo: ${text.slice(0, 160)}`); break; }
+      zaiFileFormat = fmt;
+      return body.md_results.trim();
+    }
+  }
+  throw lastErr;
 }
 
 /** Testo digitale della pagina, se ne ha abbastanza da non richiedere l'OCR. */
@@ -238,10 +298,18 @@ function pagesFor(file, opts, workdir) {
 }
 
 async function run(opts) {
-  if (!opts.file) fail("specifica un file. Uso: glm-ocr.mjs <file> [--out file.md] [--mode text|table|formula] [--pages 1-3] [--dpi 150] [--force-ocr]");
+  if (!opts.file) fail("specifica un file. Uso: glm-ocr.mjs <file> [--out file.md] [--mode text|table|formula] [--pages 1-3] [--dpi 150] [--force-ocr] [--cloud]");
   if (!existsSync(opts.file)) fail(`file non trovato: ${opts.file}`);
-  const host = resolveHost(process.env.OLLAMA_HOST);
-  const model = await ensureModel(host);
+  let host, model, zaiKey;
+  if (opts.cloud) {
+    zaiKey = loadZaiKey();
+    model = "glm-ocr (cloud Z.ai)";
+    process.stderr.write("glm-ocr: MODALITA CLOUD — le pagine vengono inviate ai server di Z.ai. Solo per documenti non riservati.\n");
+  } else {
+    host = resolveHost(process.env.OLLAMA_HOST);
+    model = await ensureModel(host);
+  }
+  const concurrency = opts.cloud ? CLOUD_CONCURRENCY : 1;
 
   const workdir = mkdtempSync(join(tmpdir(), "glm-ocr-"));
   try {
@@ -253,30 +321,49 @@ async function run(opts) {
     }
     const emit = (chunk) => (opts.out ? appendFileSync(opts.out, chunk) : process.stdout.write(chunk));
     emit([
-      `<!-- glm-ocr: ${basename(opts.file)} | modello ${model} | modalita ${opts.mode} | ${new Date().toISOString()} -->`,
+      `<!-- glm-ocr: ${basename(opts.file)} | modello ${model} | modalita ${opts.cloud ? "layout" : opts.mode} | ${new Date().toISOString()} -->`,
       `<!-- Testo da OCR automatico: verificare sull'originale prima di citarlo. -->`,
     ].join("\n") + "\n");
 
-    const toOcr = pages.filter((p) => opts.forceOcr || !usableTextLayer(p.text)).length;
-    if (toOcr < pages.length)
-      process.stderr.write(`glm-ocr: ${pages.length - toOcr} pagine hanno gia testo digitale (nessun OCR), ${toOcr} da leggere con GLM-OCR\n`);
-    let done = 0, ocrMs = 0;
-    for (const [i, p] of pages.entries()) {
-      const digital = opts.forceOcr ? null : usableTextLayer(p.text);
-      let text;
-      if (digital) {
-        text = digital;
-        process.stderr.write(`glm-ocr: pagina ${i + 1}/${pages.length} (testo digitale)\n`);
-      } else {
+    const tasks = pages.map((p, i) => ({ p, i, digital: opts.forceOcr ? null : usableTextLayer(p.text) }));
+    const pending = tasks.filter((t) => !t.digital);
+    if (pending.length < pages.length)
+      process.stderr.write(`glm-ocr: ${pages.length - pending.length} pagine hanno gia testo digitale (nessun OCR), ${pending.length} da leggere con GLM-OCR\n`);
+
+    // Le pagine si scrivono in ordine, appena disponibili (anche con piu richieste in parallelo).
+    const results = new Array(pages.length);
+    let flushed = 0;
+    const flush = () => {
+      while (flushed < pages.length && results[flushed] !== undefined) {
+        const { text, digital } = results[flushed];
+        emit(`\n<!-- pagina ${pages[flushed].page}${digital ? " (testo digitale)" : ""} -->\n\n${text || "[pagina vuota o illeggibile]"}\n`);
+        flushed++;
+      }
+    };
+    for (const t of tasks) if (t.digital) results[t.i] = { text: t.digital, digital: true };
+    flush();
+
+    let next = 0, done = 0, ocrMs = 0, aborted = false;
+    const worker = async () => {
+      while (!aborted && next < pending.length) {
+        const t = pending[next++];
         const t0 = Date.now();
-        text = await ocrImage(host, model, p.path, opts.mode);
+        try {
+          const text = opts.cloud ? await ocrImageCloud(zaiKey, t.p.path) : await ocrImage(host, model, t.p.path, opts.mode);
+          results[t.i] = { text, digital: false };
+        } catch (e) {
+          aborted = true;
+          throw e;
+        }
         ocrMs += Date.now() - t0;
         done++;
-        const eta = toOcr > done ? ` — fine stimata tra ${fmtDuration((ocrMs / done) * (toOcr - done))}` : "";
-        process.stderr.write(`glm-ocr: pagina ${i + 1}/${pages.length} (OCR ${Math.round((Date.now() - t0) / 1000)} s)${eta}\n`);
+        const eta = pending.length > done ? ` — fine stimata tra ${fmtDuration((ocrMs / done / concurrency) * (pending.length - done))}` : "";
+        process.stderr.write(`glm-ocr: pagina ${t.i + 1}/${pages.length} letta (${done}/${pending.length})${eta}\n`);
+        flush();
       }
-      emit(`\n<!-- pagina ${p.page}${digital ? " (testo digitale)" : ""} -->\n\n${text || "[pagina vuota o illeggibile]"}\n`);
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, pending.length) }, worker));
+    flush();
     if (opts.out) process.stderr.write(`glm-ocr: ${pages.length} pagine -> ${opts.out}\n`);
   } finally {
     rmSync(workdir, { recursive: true, force: true });
@@ -323,7 +410,7 @@ try {
   if (cmd === "check") await check();
   else if (cmd === "selfcheck") selfcheck();
   else if (!cmd || cmd === "-h" || cmd === "--help")
-    console.log("Uso: glm-ocr.mjs check | selfcheck | <file.pdf|png|jpg|webp> [--out file.md] [--mode text|table|formula] [--pages 1-3,7] [--dpi 150] [--force-ocr]");
+    console.log("Uso: glm-ocr.mjs check | selfcheck | <file.pdf|png|jpg|webp> [--out file.md] [--mode text|table|formula] [--pages 1-3,7] [--dpi 150] [--force-ocr] [--cloud]");
   else await run(parseArgs([cmd, ...rest]));
 } catch (e) {
   fail(e.message);
