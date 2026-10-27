@@ -5,8 +5,12 @@
  * Uso:
  *   node glm-ocr.mjs check
  *   node glm-ocr.mjs <file.pdf|png|jpg|webp> [--out <file.md>] [--mode text|table|formula]
- *                    [--pages 1-3,7] [--dpi 200]
+ *                    [--pages 1-3,7] [--dpi 150] [--force-ocr]
  *   node glm-ocr.mjs selfcheck
+ *
+ * Le pagine che hanno gia testo digitale (PDF non scansionati o con livello OCR) non passano
+ * dal modello: si usa il loro testo, molto piu veloce. --force-ocr le rilegge comunque con GLM-OCR.
+ * L'output viene scritto pagina per pagina, quindi un'interruzione non fa perdere il lavoro fatto.
  *
  * Zero dipendenze (Node >= 18). PDF: su macOS usa il motore PDF di sistema (PDFKit, nessuna
  * installazione); altrove serve `pdftoppm` (poppler), usato anche su macOS se presente.
@@ -17,7 +21,7 @@
  *   OLLAMA_HOST    default http://127.0.0.1:11434 (solo localhost / 127.x / ::1)
  *   GLM_OCR_MODEL  default glm-ocr (senza tag usa la variante installata: latest, q8_0, bf16)
  */
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { join, extname, basename, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -26,7 +30,9 @@ const MODEL = process.env.GLM_OCR_MODEL || "glm-ocr";
 const TAG_PREFERENCE = ["latest", "q8_0", "bf16"];
 const PROMPTS = { text: "Text Recognition:", table: "Table Recognition:", formula: "Formula Recognition:" };
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp"]);
-const PAGE_TIMEOUT_MS = 5 * 60 * 1000;
+const PAGE_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_TOKENS_PER_PAGE = 4096;   // ferma il modello se entra in un ciclo di ripetizioni
+const MIN_TEXT_LAYER_CHARS = 200;   // sotto questa soglia la pagina e considerata scansionata
 
 // ---------------------------------------------------------------- helpers
 function fail(msg) {
@@ -64,13 +70,14 @@ function parsePages(spec) {
 }
 
 function parseArgs(argv) {
-  const opts = { file: null, out: null, mode: "text", pages: null, dpi: 200 };
+  const opts = { file: null, out: null, mode: "text", pages: null, dpi: 150, forceOcr: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--out") opts.out = argv[++i];
     else if (a === "--mode") opts.mode = argv[++i];
     else if (a === "--pages") opts.pages = parsePages(argv[++i]);
     else if (a === "--dpi") opts.dpi = Number(argv[++i]);
+    else if (a === "--force-ocr") opts.forceOcr = true;
     else if (a.startsWith("--")) throw new Error(`opzione sconosciuta: ${a}`);
     else if (!opts.file) opts.file = a;
     else throw new Error(`argomento in eccesso: ${a}`);
@@ -117,18 +124,31 @@ async function ocrImage(host, model, pngPath, mode) {
       prompt: PROMPTS[mode],
       images: [readFileSync(pngPath).toString("base64")],
       stream: false,
-      options: { temperature: 0 },
+      options: { temperature: 0, num_predict: MAX_TOKENS_PER_PAGE },
     }),
     signal: AbortSignal.timeout(PAGE_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`Ollama ha risposto ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const body = await res.json();
-  return String(body.response || "").trim();
+  const text = String(body.response || "").trim();
+  return body.done_reason === "length" ? `${text}\n\n[ATTENZIONE: trascrizione interrotta, pagina da verificare sull'originale]` : text;
 }
+
+/** Testo digitale della pagina, se ne ha abbastanza da non richiedere l'OCR. */
+function usableTextLayer(text) {
+  return text && text.replace(/\s/g, "").length >= MIN_TEXT_LAYER_CHARS ? text.trim() : null;
+}
+
+const fmtDuration = (ms) => {
+  if (ms < 60000) return "meno di 1 min";
+  const m = Math.round(ms / 60000);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+};
 
 // ---------------------------------------------------------------- pages
 // Renderer PDF -> PNG con PDFKit di macOS (JavaScript for Automation, nessuna dipendenza).
-// Argomenti: <pdf> <cartella> <dpi> <prima pagina> <ultima pagina>; scrive p-<n>.png.
+// Argomenti: <pdf> <cartella> <dpi> <prima pagina> <ultima pagina>; scrive p-<n>.png e, se la
+// pagina ha testo digitale, p-<n>.txt.
 const MAC_RENDER_JXA = `
 ObjC.import('Foundation'); ObjC.import('AppKit'); ObjC.import('PDFKit');
 function run(argv) {
@@ -147,6 +167,8 @@ function run(argv) {
     const rep = $.NSBitmapImageRep.imageRepWithData(img.TIFFRepresentation);
     const png = rep.representationUsingTypeProperties(4, $());
     if (!png.writeToFileAtomically(argv[1] + '/p-' + i + '.png', true)) throw new Error('scrittura pagina ' + i + ' non riuscita');
+    const str = page.string;
+    if (str && !str.isNil() && ObjC.unwrap(str).trim()) str.writeToFileAtomicallyEncodingError(argv[1] + '/p-' + i + '.txt', true, 4, $());
   }
   return String(n);
 }`;
@@ -166,7 +188,20 @@ function pdfEngine() {
   return process.platform === "darwin" ? "macos" : null;
 }
 
-/** Ritorna [{page, path}] — rasterizza i PDF in una cartella temporanea. */
+/** Con poppler: estrae il testo digitale in p-<n>.txt (pagine separate da form feed). */
+function writePdftotextPages(file, opts, workdir) {
+  let out;
+  try {
+    const range = opts.pages ? ["-f", String(Math.min(...opts.pages)), "-l", String(Math.max(...opts.pages))] : [];
+    out = execFileSync("pdftotext", ["-layout", ...range, file, "-"], { stdio: ["ignore", "pipe", "ignore"], maxBuffer: 256 * 1024 * 1024 }).toString("utf8");
+  } catch {
+    return; // pdftotext assente o errore: si fa OCR su tutte le pagine
+  }
+  const first = opts.pages ? Math.min(...opts.pages) : 1;
+  out.split("\f").forEach((t, i) => { if (t.trim()) writeFileSync(join(workdir, `p-${first + i}.txt`), t); });
+}
+
+/** Ritorna [{page, path, text}] — rasterizza i PDF in una cartella temporanea. */
 function pagesFor(file, opts, workdir) {
   const ext = extname(file).toLowerCase();
   if (IMAGE_EXT.has(ext)) return [{ page: 1, path: file }];
@@ -187,19 +222,23 @@ function pagesFor(file, opts, workdir) {
     const args = ["-r", String(opts.dpi), "-png"];
     if (opts.pages) args.push("-f", String(first), "-l", String(last));
     execFileSync("pdftoppm", [...args, file, join(workdir, "p")], { stdio: ["ignore", "ignore", "pipe"] });
+    writePdftotextPages(file, opts, workdir);
   } else {
     throw new Error("pdftoppm non trovato. Installa poppler (Debian/Ubuntu: apt install poppler-utils; Windows: choco install poppler).");
   }
   return readdirSync(workdir)
     .map((f) => ({ f, m: f.match(/^p-0*(\d+)\.png$/) }))
     .filter((x) => x.m)
-    .map((x) => ({ page: Number(x.m[1]), path: join(workdir, x.f) }))
+    .map((x) => {
+      const txt = join(workdir, `p-${Number(x.m[1])}.txt`);
+      return { page: Number(x.m[1]), path: join(workdir, x.f), text: existsSync(txt) ? readFileSync(txt, "utf8") : null };
+    })
     .filter((p) => !opts.pages || opts.pages.has(p.page))
     .sort((a, b) => a.page - b.page);
 }
 
 async function run(opts) {
-  if (!opts.file) fail("specifica un file. Uso: glm-ocr.mjs <file> [--out file.md] [--mode text|table|formula] [--pages 1-3] [--dpi 200]");
+  if (!opts.file) fail("specifica un file. Uso: glm-ocr.mjs <file> [--out file.md] [--mode text|table|formula] [--pages 1-3] [--dpi 150] [--force-ocr]");
   if (!existsSync(opts.file)) fail(`file non trovato: ${opts.file}`);
   const host = resolveHost(process.env.OLLAMA_HOST);
   const model = await ensureModel(host);
@@ -208,22 +247,37 @@ async function run(opts) {
   try {
     const pages = pagesFor(opts.file, opts, workdir);
     if (!pages.length) throw new Error("nessuna pagina da elaborare (controlla --pages)");
-    const parts = [
-      `<!-- glm-ocr: ${basename(opts.file)} | modello ${model} | modalita ${opts.mode} | ${new Date().toISOString()} -->`,
-      `<!-- Testo da OCR automatico: verificare sull'originale prima di citarlo. -->`,
-    ];
-    for (const p of pages) {
-      process.stderr.write(`glm-ocr: pagina ${p.page}/${pages[pages.length - 1].page}...\n`);
-      const text = await ocrImage(host, model, p.path, opts.mode);
-      parts.push(`\n<!-- pagina ${p.page} -->\n`);
-      parts.push(text || "[pagina vuota o illeggibile]");
-    }
-    const md = parts.join("\n") + "\n";
     if (opts.out) {
       mkdirSync(dirname(opts.out), { recursive: true });
-      writeFileSync(opts.out, md);
-      process.stderr.write(`glm-ocr: ${pages.length} pagine -> ${opts.out}\n`);
-    } else process.stdout.write(md);
+      writeFileSync(opts.out, "");
+    }
+    const emit = (chunk) => (opts.out ? appendFileSync(opts.out, chunk) : process.stdout.write(chunk));
+    emit([
+      `<!-- glm-ocr: ${basename(opts.file)} | modello ${model} | modalita ${opts.mode} | ${new Date().toISOString()} -->`,
+      `<!-- Testo da OCR automatico: verificare sull'originale prima di citarlo. -->`,
+    ].join("\n") + "\n");
+
+    const toOcr = pages.filter((p) => opts.forceOcr || !usableTextLayer(p.text)).length;
+    if (toOcr < pages.length)
+      process.stderr.write(`glm-ocr: ${pages.length - toOcr} pagine hanno gia testo digitale (nessun OCR), ${toOcr} da leggere con GLM-OCR\n`);
+    let done = 0, ocrMs = 0;
+    for (const [i, p] of pages.entries()) {
+      const digital = opts.forceOcr ? null : usableTextLayer(p.text);
+      let text;
+      if (digital) {
+        text = digital;
+        process.stderr.write(`glm-ocr: pagina ${i + 1}/${pages.length} (testo digitale)\n`);
+      } else {
+        const t0 = Date.now();
+        text = await ocrImage(host, model, p.path, opts.mode);
+        ocrMs += Date.now() - t0;
+        done++;
+        const eta = toOcr > done ? ` — fine stimata tra ${fmtDuration((ocrMs / done) * (toOcr - done))}` : "";
+        process.stderr.write(`glm-ocr: pagina ${i + 1}/${pages.length} (OCR ${Math.round((Date.now() - t0) / 1000)} s)${eta}\n`);
+      }
+      emit(`\n<!-- pagina ${p.page}${digital ? " (testo digitale)" : ""} -->\n\n${text || "[pagina vuota o illeggibile]"}\n`);
+    }
+    if (opts.out) process.stderr.write(`glm-ocr: ${pages.length} pagine -> ${opts.out}\n`);
   } finally {
     rmSync(workdir, { recursive: true, force: true });
   }
@@ -254,6 +308,8 @@ function selfcheck() {
   assert(pickModel(["glm-ocr:bf16", "glm-ocr:latest"], "glm-ocr") === "glm-ocr:latest", "preferenza latest");
   assert(pickModel(["glm-ocr:bf16"], "glm-ocr:q8_0") === null, "tag esplicito mancante");
   assert(pickModel(["glm-ocr-x:latest"], "glm-ocr") === null, "nome diverso");
+  assert(usableTextLayer("a".repeat(250)) && !usableTextLayer("  abc \n ") && !usableTextLayer(null), "soglia testo digitale");
+  assert(fmtDuration(30000) === "meno di 1 min" && fmtDuration(125 * 60000) === "2 h 5 min", "durata");
   assert([...parsePages("1-3,7")].join() === "1,2,3,7", "parsePages");
   let threw = false;
   try { parsePages("3-1"); } catch { threw = true; }
@@ -267,7 +323,7 @@ try {
   if (cmd === "check") await check();
   else if (cmd === "selfcheck") selfcheck();
   else if (!cmd || cmd === "-h" || cmd === "--help")
-    console.log("Uso: glm-ocr.mjs check | selfcheck | <file.pdf|png|jpg|webp> [--out file.md] [--mode text|table|formula] [--pages 1-3,7] [--dpi 200]");
+    console.log("Uso: glm-ocr.mjs check | selfcheck | <file.pdf|png|jpg|webp> [--out file.md] [--mode text|table|formula] [--pages 1-3,7] [--dpi 150] [--force-ocr]");
   else await run(parseArgs([cmd, ...rest]));
 } catch (e) {
   fail(e.message);

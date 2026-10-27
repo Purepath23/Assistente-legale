@@ -33,7 +33,9 @@ node "${CLAUDE_PROJECT_DIR}/.claude/plugin/scripts/glm-ocr.mjs" <file> \
 ```
 
 - `--mode text` (default) per il testo, `table` per tabelle, `formula` per formule.
-- `--dpi 300` per scansioni piccole o sbiadite.
+- `--dpi` predefinito 150; `--dpi 200`–`300` per caratteri piccoli o scansioni sbiadite (più lento).
+- Le pagine con testo digitale non passano da GLM-OCR (marcatore `<!-- pagina N (testo digitale) -->`); `--force-ocr` le rilegge comunque.
+- L'output è scritto pagina per pagina: se il processo si interrompe, le pagine già fatte restano nel file.
 - L'output è Markdown con un marcatore `<!-- pagina N -->` per ogni pagina: usalo come **locus** nelle citazioni e negli eventi della cronologia ("p. N").
 
 ## Regole
